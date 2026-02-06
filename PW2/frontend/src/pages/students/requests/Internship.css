@@ -1,0 +1,68 @@
+.input-group{
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding-left:150px;
+}
+
+.request-text{
+    width:350px;
+    height:40px;
+    margin-right:150px;
+    margin-bottom:100px;
+    border:1px solid black;
+    border-radius:5px;
+    font-size:18px;
+    padding-left:15px;
+    font-family:'Poppins', sans-serif;
+}
+
+/* Custom file input */
+.custom-file{
+    width:350px;
+    height:40px;
+    margin-right:150px;
+    margin-bottom:100px;
+    border:1px solid black;
+    border-radius:5px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 10px;
+    cursor:pointer;
+    background:white;
+    font-family:'Poppins', sans-serif;
+    font-size:16px;
+}
+
+.custom-file span{
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+}
+
+/* Upload button look */
+.custom-file::after{
+    content: 'Upload';
+    background-color:#000dff84;
+    color:white;
+    padding:6px 14px;
+    border-radius:5px;
+    font-size:14px;
+}
+
+.submit-button{
+    width:350px;
+    height:40px;
+    margin-right:150px;
+    border:1px solid black;
+    background-color:#000dff84;
+    border-radius:5px;
+    font-size:18px;
+    padding-left:15px;
+    font-family:'Poppins', sans-serif;
+    cursor: pointer;
+    color: white;
+    border: none;
+}
