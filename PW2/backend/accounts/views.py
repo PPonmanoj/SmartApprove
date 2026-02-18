@@ -202,10 +202,6 @@ class BonafideDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk, *args, **kwargs):
-        """
-        Return stored bonafide details (extracted/checklist/explanation) for a given request id.
-        Staff can view requests for their class; students can view their own.
-        """
         try:
             bon = BonafideRequest.objects.get(pk=pk)
         except BonafideRequest.DoesNotExist:
@@ -217,11 +213,23 @@ class BonafideDetailView(APIView):
             serializer = BonafideRequestSerializer(bon, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        # staff may view if their staff_profile.student_class matches student's class
+        # staff access rules
         staff_profile = getattr(user, "staff_profile", None)
-        if staff_profile and staff_profile.student_class:
-            student_cls = getattr(getattr(bon.student, "student_profile", None), "student_class", None)
+        if not staff_profile:
+            return Response({"detail": "Not authorized to view this request."}, status=status.HTTP_403_FORBIDDEN)
+
+        designation = (staff_profile.designation or "").upper()
+        student_cls = getattr(getattr(bon.student, "student_profile", None), "student_class", None)
+
+        # Tutors can view requests for their class (any not yet forwarded to PC)
+        if designation == 'TUTOR':
             if student_cls and student_cls == staff_profile.student_class:
+                serializer = BonafideRequestSerializer(bon, context={'request': request})
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # Program Coordinators can view requests that tutors approved (status == 'pc_pending') for their class
+        if designation in ('PROGRAM_COORDINATOR', 'PC', 'COORDINATOR'):
+            if student_cls and student_cls == staff_profile.student_class and getattr(bon, "status", None) == "pc_pending":
                 serializer = BonafideRequestSerializer(bon, context={'request': request})
                 return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -231,30 +239,96 @@ class IncomingBonafideListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        """
-        Tutor retrieves bonafide requests for their student_class.
-        Added logging to help debug missing requests.
-        """
         user = request.user
         logger.info("IncomingBonafideListView called by user=%s", getattr(user, "username", None))
 
-        # ensure user is staff with staff_profile
-        try:
-            staff_profile = user.staff_profile
-        except Exception:
+        staff_profile = getattr(user, "staff_profile", None)
+        if not staff_profile:
             logger.warning("User %s has no staff_profile", getattr(user, "username", None))
             return Response({"detail": "Staff profile required."}, status=status.HTTP_403_FORBIDDEN)
 
+        designation = (staff_profile.designation or "").upper()
         tutor_class = staff_profile.student_class
-        logger.info("Staff %s tutor_class=%s", user.username, getattr(tutor_class, "code", None))
+        logger.info("Staff %s designation=%s class=%s", user.username, designation, getattr(tutor_class, "code", None))
 
         if not tutor_class:
-            logger.warning("Tutor %s has no class assigned", user.username)
-            return Response({"detail": "Tutor has no class assigned."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "Staff has no class assigned."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get BonafideRequests where student's student_profile.student_class == tutor_class
-        incoming_qs = BonafideRequest.objects.filter(student__student_profile__student_class=tutor_class)
-        logger.info("Found %d bonafide requests for tutor %s (class=%s)", incoming_qs.count(), user.username, tutor_class.code)
+        # Tutors: show requests for their class, excluding those already forwarded to PC
+        if designation == 'TUTOR':
+            incoming_qs = BonafideRequest.objects.filter(
+                student__student_profile__student_class=tutor_class
+            ).exclude(status='pc_pending')
+            serializer = BonafideRequestSerializer(incoming_qs, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
 
-        serializer = BonafideRequestSerializer(incoming_qs, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        # Program Coordinators: show requests forwarded to PC for their class
+        if designation in ('PROGRAM_COORDINATOR', 'PC', 'COORDINATOR'):
+            incoming_qs = BonafideRequest.objects.filter(
+                student__student_profile__student_class=tutor_class,
+                status='pc_pending'
+            )
+            serializer = BonafideRequestSerializer(incoming_qs, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        logger.warning("User %s denied incoming list access due to designation=%s", user.username, designation)
+        return Response({"detail": "Only tutors and program coordinators can view incoming requests."}, status=status.HTTP_403_FORBIDDEN)
+
+class BonafideActionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        """
+        Tutor action on a bonafide request.
+        Expects JSON body: { "action": "approve"|"reject", "comment": "optional comment" }
+        Approve -> status becomes 'pc_pending' (visible to Program Coordinators).
+        Reject  -> status becomes 'rejected_by_tutor'.
+        Tutor comment is saved to bon.tutor_comment if that field exists, otherwise saved into
+        bon.extracted['_tutor_comment'] (extracted is assumed JSONField).
+        """
+        try:
+            bon = BonafideRequest.objects.get(pk=pk)
+        except BonafideRequest.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        staff_profile = getattr(user, "staff_profile", None)
+        if not staff_profile:
+            return Response({"detail": "Staff profile required."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Only tutors may perform this action (guard)
+        designation = (staff_profile.designation or "").upper()
+        if designation != "TUTOR":
+            return Response({"detail": "Only tutors can perform this action."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Tutor must belong to the same class as the student
+        student_cls = getattr(getattr(bon.student, "student_profile", None), "student_class", None)
+        if not student_cls or student_cls != staff_profile.student_class:
+            return Response({"detail": "Not authorized for this student/class."}, status=status.HTTP_403_FORBIDDEN)
+
+        action = (request.data.get("action") or "").lower()
+        comment = request.data.get("comment", "") or ""
+
+        if action not in ("approve", "reject"):
+            return Response({"detail": "Invalid action. Use 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # update status and save tutor comment
+        if action == "approve":
+            bon.status = "pc_pending"
+        else:
+            bon.status = "rejected_by_tutor"
+
+        # persist comment: prefer explicit model field if present, otherwise store inside extracted JSON
+        try:
+            if hasattr(bon, "tutor_comment"):
+                setattr(bon, "tutor_comment", comment)
+            else:
+                extracted = bon.extracted if isinstance(bon.extracted, dict) else {}
+                extracted["_tutor_comment"] = comment
+                bon.extracted = extracted
+        except Exception:
+            # best-effort only, don't block action
+            logger.exception("Failed to persist tutor comment for bonafide id=%s", bon.id)
+
+        bon.save()
+        return Response(BonafideRequestSerializer(bon, context={"request": request}).data, status=status.HTTP_200_OK)

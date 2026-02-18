@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState } from "react"
 import '../students/PendingRequests.css'
 
 const IncomingRequests = () => {
@@ -12,32 +12,47 @@ const IncomingRequests = () => {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
 
+  // new: tutor comment state
+  const [tutorComment, setTutorComment] = useState("")
+  const [actionLoading, setActionLoading] = useState(false)
+  const [actionError, setActionError] = useState(null)
+
   // helper to read JWT from localStorage (common keys)
   const getJwtToken = () => {
-    return localStorage.getItem('access') ||
-           localStorage.getItem('token') ||
-           localStorage.getItem('jwt') ||
-           null
+    const ls = localStorage
+    return ls.getItem("access") || ls.getItem("token") || null
   }
+
+  // helper to ensure response is JSON or throw readable text
+  const parseJsonOrThrow = async (res) => {
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) {
+      const txt = await res.text()
+      throw new Error(txt || `Expected JSON but got ${contentType}`)
+    }
+    return res.json()
+  }
+
+  const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000"
 
   useEffect(() => {
     const fetchIncoming = async () => {
       setLoading(true)
+      setError(null)
       try {
         const token = getJwtToken()
-        const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-        const resp = await fetch('http://localhost:8000/api/auth/bonafide/incoming/', {
-          method: 'GET',
-          headers
+        const res = await fetch(`${API_BASE}/api/auth/bonafide/incoming/`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
         })
-        if (!resp.ok) {
-          const txt = await resp.text()
-          throw new Error(txt || 'Failed to fetch')
+        if (!res.ok) {
+          const txt = await res.text()
+          throw new Error(txt || `Failed to load incoming requests (${res.status})`)
         }
-        const data = await resp.json()
+        const data = await parseJsonOrThrow(res)
         setRequests(data)
       } catch (err) {
-        setError(err.message || 'Failed to load incoming requests')
+        console.error("fetchIncoming error:", err)
+        setError(err.message || "Error")
       } finally {
         setLoading(false)
       }
@@ -47,26 +62,78 @@ const IncomingRequests = () => {
 
   // fetch detail and show modal
   const viewRequest = async (id) => {
-    setDetailError(null)
     setDetailLoading(true)
+    setDetailError(null)
+    setTutorComment("")
     try {
       const token = getJwtToken()
-      const headers = token ? { 'Authorization': `Bearer ${token}` } : {}
-      const resp = await fetch(`http://localhost:8000/api/auth/bonafide/${id}/`, {
-        method: 'GET',
-        headers
+      const res = await fetch(`${API_BASE}/api/auth/bonafide/${id}/`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       })
-      if (!resp.ok) {
-        const txt = await resp.text()
-        throw new Error(txt || 'Failed to fetch detail')
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || "Failed to fetch details")
       }
-      const data = await resp.json()
+      const data = await parseJsonOrThrow(res)
       setSelected(data)
       setModalVisible(true)
     } catch (err) {
-      setDetailError(err.message || 'Failed to load request detail')
+      setDetailError(err.message || "Error")
     } finally {
       setDetailLoading(false)
+    }
+  }
+
+  const refreshList = async () => {
+    setLoading(true)
+    try {
+      const token = getJwtToken()
+      const res = await fetch(`${API_BASE}/api/auth/bonafide/incoming/`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      })
+      if (res.ok) {
+        const d = await parseJsonOrThrow(res)
+        setRequests(d)
+      } else {
+        const txt = await res.text()
+        throw new Error(txt || "Failed to refresh list")
+      }
+    } catch (e) {
+      // ignore refresh errors but log to console for debug
+      console.error("refreshList error:", e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // handle tutor approve/reject
+  const handleAction = async (action) => {
+    if (!selected || !selected.id) return
+    setActionLoading(true)
+    setActionError(null)
+    try {
+      const token = getJwtToken()
+      const res = await fetch(`${API_BASE}/api/auth/bonafide/${selected.id}/action/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ action, comment: tutorComment })
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || "Action failed")
+      }
+      // close modal and refresh incoming list (tutor should no longer see approved -> PC will)
+      setModalVisible(false)
+      setSelected(null)
+      setTutorComment("")
+      await refreshList()
+    } catch (err) {
+      setActionError(err.message || "Action failed")
+    } finally {
+      setActionLoading(false)
     }
   }
 
@@ -197,13 +264,27 @@ const IncomingRequests = () => {
                 {renderChecklistTable(selected.checklist || {})}
               </div>
 
+              <div className="comment-box" style={{marginTop: 12}}>
+                <label style={{fontWeight: 600}}>Comment (optional):</label>
+                <textarea
+                  value={tutorComment}
+                  onChange={(e) => setTutorComment(e.target.value)}
+                  placeholder="Add a short comment for the Program Coordinator"
+                  rows={3}
+                  style={{ width: "100%", padding: 8, borderRadius: 4, border: '1px solid #ccc', marginTop: 4 }}
+                />
+              </div>
+
+              {actionError && <div className="error" style={{marginTop:8}}>{actionError}</div>}
+
               <div style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:14}}>
-                {selected.permission_file_url && (
-                  <a href={selected.permission_file_url} target="_blank" rel="noopener noreferrer">
-                    <button className='submit-button' style={{background:'#2b7cff', width:'200px'}}>Open Document</button>
-                  </a>
-                )}
-                <button onClick={() => setModalVisible(false)} className="submit-button">Close</button>
+                <button onClick={() => handleAction("reject")} className='submit-button' disabled={actionLoading} style={{background:'#c23d3d', width:'120px'}}>
+                  {actionLoading ? "Processing..." : "Reject"}
+                </button>
+                <button onClick={() => handleAction("approve")} className='submit-button' disabled={actionLoading} style={{background:'#1a7f37', width:'120px'}}>
+                  {actionLoading ? "Processing..." : "Approve"}
+                </button>
+                <button onClick={() => setModalVisible(false)} className="submit-button" style={{width:'120px'}}>Close</button>
               </div>
               {detailError && <div style={{color:'red', marginTop:8}}>{detailError}</div>}
             </div>
