@@ -61,3 +61,45 @@
 .cancel-btn:hover{
     background-color: #b30000;
 }
+
+.modal {
+  position: fixed;
+  inset: 0; /* top:0; right:0; bottom:0; left:0; */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.5);
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal-content {
+  background: #fff;
+  width: 100%;
+  max-width: 900px;
+  max-height: 90vh;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+}
+
+/* small helpers used in the modal */
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.modal .error {
+  color: #c62828;
+  margin-top: 8px;
+}
+
+/* ensure the modal covers everything (if other elements use high z-index) */
+body > .modal {
+  z-index: 9999;
+}
+
+/* optional: avoid background scroll when modal open (you can toggle a class on body if needed) */

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react"
 import '../students/PendingRequests.css'
 
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000"
+
 const IncomingRequests = () => {
   const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(false)
@@ -12,18 +14,17 @@ const IncomingRequests = () => {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
 
-  // new: tutor comment state
-  const [tutorComment, setTutorComment] = useState("")
+  // comment + action state (generic for tutor/pc/hod)
+  const [staffComment, setStaffComment] = useState("")
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState(null)
 
-  // helper to read JWT from localStorage (common keys)
   const getJwtToken = () => {
     const ls = localStorage
     return ls.getItem("access") || ls.getItem("token") || null
   }
 
-  // helper to ensure response is JSON or throw readable text
+  // parse JSON or surface text
   const parseJsonOrThrow = async (res) => {
     const contentType = res.headers.get('content-type') || ''
     if (!contentType.includes('application/json')) {
@@ -33,7 +34,22 @@ const IncomingRequests = () => {
     return res.json()
   }
 
-  const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000"
+  // read current user designation from localStorage profile
+  const getCurrentDesignation = () => {
+    try {
+      const raw = localStorage.getItem("user") || localStorage.getItem("profile")
+      if (!raw) return null
+      const u = JSON.parse(raw)
+      const staff = u.staff_profile || u.staff || null
+      if (staff && staff.designation) return String(staff.designation).toUpperCase()
+      if (u.designation) return String(u.designation).toUpperCase()
+      return null
+    } catch (e) {
+      return null
+    }
+  }
+
+  const currentDesignation = getCurrentDesignation()
 
   useEffect(() => {
     const fetchIncoming = async () => {
@@ -60,11 +76,10 @@ const IncomingRequests = () => {
     fetchIncoming()
   }, [])
 
-  // fetch detail and show modal
   const viewRequest = async (id) => {
     setDetailLoading(true)
     setDetailError(null)
-    setTutorComment("")
+    setStaffComment("")
     try {
       const token = getJwtToken()
       const res = await fetch(`${API_BASE}/api/auth/bonafide/${id}/`, {
@@ -99,14 +114,12 @@ const IncomingRequests = () => {
         throw new Error(txt || "Failed to refresh list")
       }
     } catch (e) {
-      // ignore refresh errors but log to console for debug
       console.error("refreshList error:", e)
     } finally {
       setLoading(false)
     }
   }
 
-  // handle tutor approve/reject
   const handleAction = async (action) => {
     if (!selected || !selected.id) return
     setActionLoading(true)
@@ -119,16 +132,15 @@ const IncomingRequests = () => {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({ action, comment: tutorComment })
+        body: JSON.stringify({ action, comment: staffComment })
       })
       if (!res.ok) {
         const txt = await res.text()
         throw new Error(txt || "Action failed")
       }
-      // close modal and refresh incoming list (tutor should no longer see approved -> PC will)
       setModalVisible(false)
       setSelected(null)
-      setTutorComment("")
+      setStaffComment("")
       await refreshList()
     } catch (err) {
       setActionError(err.message || "Action failed")
@@ -137,61 +149,45 @@ const IncomingRequests = () => {
     }
   }
 
-  const renderExtractedTable = (extracted = {}) => {
-    const rows = [
-      { key: 'name', label: 'Name' },
-      { key: 'roll_number', label: 'Roll Number' },
-      { key: 'department', label: 'Department / Class' },
-      { key: 'reason', label: 'Reason / Purpose' },
-      { key: 'has_signature', label: 'Signature Present' }
-    ]
+  const canAct = (designation, status) => {
+    if (!designation || !status) return false
+    const d = designation.toUpperCase()
+    const s = (status || "").toLowerCase()
+    if (d === 'TUTOR') return !['pc_pending','hod_pending','approved','rejected'].includes(s)
+    if (['PROGRAM_COORDINATOR','PC','COORDINATOR'].includes(d)) return s === 'pc_pending'
+    if (['HOD','HEAD','HEAD_OF_DEPARTMENT'].includes(d)) return s === 'hod_pending'
+    return false
+  }
 
+  const renderExtractedTable = (extracted = {}) => {
+    if (!extracted || Object.keys(extracted).length === 0) {
+      return <div style={{color:'#666'}}>No extracted fields.</div>
+    }
     return (
       <table style={{width:'100%', borderCollapse:'collapse', marginTop:8}}>
-        <thead>
-          <tr>
-            <th style={{textAlign:'left', borderBottom:'2px solid #eee', padding:'8px 6px'}}>Field</th>
-            <th style={{textAlign:'left', borderBottom:'2px solid #eee', padding:'8px 6px'}}>Value</th>
-          </tr>
-        </thead>
         <tbody>
-          {rows.map(r => {
-            let value = extracted[r.key]
-            if (r.key === 'has_signature') value = value ? 'Yes' : 'No'
-            if (value === undefined || value === null || value === '') value = '—'
-            return (
-              <tr key={r.key}>
-                <td style={{padding:'8px 6px', borderBottom:'1px solid #f3f3f3', width:'35%', color:'#333', fontWeight:600}}>{r.label}</td>
-                <td style={{padding:'8px 6px', borderBottom:'1px solid #f3f3f3', color:'#222'}}>{value}</td>
-              </tr>
-            )
-          })}
-          {/* AI explanation row */}
-          <tr>
-            <td style={{padding:'8px 6px', borderBottom:'1px solid #f3f3f3', width:'35%', color:'#333', fontWeight:600}}>AI Explanation</td>
-            <td style={{padding:'8px 6px', borderBottom:'1px solid #f3f3f3', color:'#222'}}>{extracted.explanation || '—'}</td>
-          </tr>
+          {Object.entries(extracted).map(([k, v]) => (
+            <tr key={k} style={{borderBottom:'1px solid #eee'}}>
+              <td style={{padding:'6px 8px', fontWeight:600, width:'30%', verticalAlign:'top'}}>{k}</td>
+              <td style={{padding:'6px 8px', whiteSpace:'pre-wrap'}}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     )
   }
 
   const renderChecklistTable = (checklist = {}) => {
-    const entries = Object.entries(checklist || {})
-    if (!entries.length) return null
+    if (!checklist || Object.keys(checklist).length === 0) {
+      return <div style={{color:'#666'}}>No checklist available.</div>
+    }
     return (
-      <table style={{width:'100%', borderCollapse:'collapse', marginTop:10}}>
-        <thead>
-          <tr>
-            <th style={{textAlign:'left', borderBottom:'2px solid #eee', padding:'6px'}}>Requirement</th>
-            <th style={{textAlign:'left', borderBottom:'2px solid #eee', padding:'6px'}}>Status</th>
-          </tr>
-        </thead>
+      <table style={{width:'100%', borderCollapse:'collapse', marginTop:8}}>
         <tbody>
-          {entries.map(([k,v]) => (
-            <tr key={k}>
-              <td style={{padding:'6px', borderBottom:'1px solid #f3f3f3', color:'#333'}}>{k}</td>
-              <td style={{padding:'6px', borderBottom:'1px solid #f3f3f3'}}>{v}</td>
+          {Object.entries(checklist).map(([k, v]) => (
+            <tr key={k} style={{borderBottom:'1px solid #eee'}}>
+              <td style={{padding:'6px 8px', fontWeight:600, width:'30%'}}>{k}</td>
+              <td style={{padding:'6px 8px', whiteSpace:'pre-wrap'}}>{typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)}</td>
             </tr>
           ))}
         </tbody>
@@ -235,58 +231,72 @@ const IncomingRequests = () => {
 
         </div>
 
+        {/* Modal */}
         {modalVisible && selected && (
-          <div className="bx-modal-overlay" onClick={() => setModalVisible(false)} style={{
-            position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999
-          }}>
-            <div className="bx-modal" onClick={(e)=>e.stopPropagation()} style={{
-              background:'#fff',
-              padding:24,
-              width:'90%',
-              maxWidth:720,
-              borderRadius:8,
-              boxShadow:'0 6px 30px rgba(0,0,0,0.18)',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-              boxSizing: 'border-box'
-            }}>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6}}>
-                <h3 style={{margin:0}}>Bonafide Request</h3>
-                <div style={{fontWeight:700, color: selected.is_valid ? '#1a7f37' : '#c23d3d'}}>
-                  {selected.is_valid ? 'APPROVED ✅' : 'PENDING / REJECTED ❌'}
-                </div>
-              </div>
+          <div className="modal">
+            <div className="modal-content">
+              <h3>Request from {selected.student_name}</h3>
+              {detailLoading && <div>Loading details...</div>}
+              {detailError && <div className="error">{detailError}</div>}
 
               <div style={{textAlign:'left', marginTop:6}}>
                 <h4 style={{marginBottom:6}}>Extracted Fields</h4>
-                {renderExtractedTable(selected.extracted || {})}
+                {/* render extracted fields table - keep your existing render helper if present */}
+                {renderExtractedTable(selected.extracted)}
                 <h4 style={{marginTop:12, marginBottom:6}}>Checklist</h4>
-                {renderChecklistTable(selected.checklist || {})}
+                {renderChecklistTable(selected.checklist)}
               </div>
 
-              <div className="comment-box" style={{marginTop: 12}}>
-                <label style={{fontWeight: 600}}>Comment (optional):</label>
-                <textarea
-                  value={tutorComment}
-                  onChange={(e) => setTutorComment(e.target.value)}
-                  placeholder="Add a short comment for the Program Coordinator"
-                  rows={3}
-                  style={{ width: "100%", padding: 8, borderRadius: 4, border: '1px solid #ccc', marginTop: 4 }}
-                />
-              </div>
+              {/* Tutor comment (read-only) */}
+              {(selected.tutor_comment || (selected.extracted && selected.extracted._tutor_comment)) && (
+                <div style={{marginTop:12, padding:12, background:'#fafafa', border:'1px solid #eee', borderRadius:6}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Comment from Tutor</div>
+                  <div style={{whiteSpace:'pre-wrap', color:'#333'}}>
+                    {selected.tutor_comment || selected.extracted._tutor_comment}
+                  </div>
+                </div>
+              )}
 
-              {actionError && <div className="error" style={{marginTop:8}}>{actionError}</div>}
+              {/* PC comment visible to HoD */}
+              {(currentDesignation && ['HOD','HEAD','HEAD_OF_DEPARTMENT'].includes(currentDesignation)) &&
+               (selected.pc_comment || (selected.extracted && selected.extracted._pc_comment)) && (
+                <div style={{marginTop:12, padding:12, background:'#fff8e6', border:'1px solid #f0e6c8', borderRadius:6}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Comment from Program Coordinator</div>
+                  <div style={{whiteSpace:'pre-wrap', color:'#333'}}>
+                    {selected.pc_comment || selected.extracted._pc_comment}
+                  </div>
+                </div>
+              )}
 
-              <div style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:14}}>
-                <button onClick={() => handleAction("reject")} className='submit-button' disabled={actionLoading} style={{background:'#c23d3d', width:'120px'}}>
-                  {actionLoading ? "Processing..." : "Reject"}
-                </button>
-                <button onClick={() => handleAction("approve")} className='submit-button' disabled={actionLoading} style={{background:'#1a7f37', width:'120px'}}>
-                  {actionLoading ? "Processing..." : "Approve"}
-                </button>
-                <button onClick={() => setModalVisible(false)} className="submit-button" style={{width:'120px'}}>Close</button>
+              {/* action input (for current staff who will act) */}
+              {canAct(currentDesignation, selected.status) && (
+                <div className="comment-box" style={{marginTop: 12}}>
+                  <label style={{fontWeight: 600}}>Your Comment (optional):</label>
+                  <textarea
+                    value={staffComment}
+                    onChange={(e) => setStaffComment(e.target.value)}
+                    placeholder="Add a short comment (optional)"
+                    rows={3}
+                    style={{ width: "100%", padding: 8, borderRadius: 4, border: '1px solid #ccc', marginTop: 4 }}
+                  />
+                </div>
+              )}
+
+              {actionError && <div className="error">{actionError}</div>}
+
+              <div className="modal-actions">
+                {canAct(currentDesignation, selected.status) && (
+                  <>
+                    <button onClick={() => handleAction("reject")} disabled={actionLoading}>
+                      {actionLoading ? "Processing..." : "Reject"}
+                    </button>
+                    <button onClick={() => handleAction("approve")} disabled={actionLoading}>
+                      {actionLoading ? "Processing..." : "Approve"}
+                    </button>
+                  </>
+                )}
+                <button onClick={() => { setModalVisible(false); setSelected(null) }}>Close</button>
               </div>
-              {detailError && <div style={{color:'red', marginTop:8}}>{detailError}</div>}
             </div>
           </div>
         )}

@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     StudentSignupView, StaffSignupView, LoginView,
     BonafideCheckView, BonafideSubmitView, BonafideDetailView,
-    IncomingBonafideListView, BonafideActionView
+    IncomingBonafideListView, BonafideActionView, BonafideHistoryView
 )
 
 urlpatterns = [
@@ -14,4 +14,5 @@ urlpatterns = [
     path('bonafide/incoming/', IncomingBonafideListView.as_view(), name='bonafide-incoming'),
     path('bonafide/<int:pk>/', BonafideDetailView.as_view(), name='bonafide-detail'),
     path("bonafide/<int:pk>/action/", BonafideActionView.as_view(), name="bonafide-action"),
+    path("bonafide/history/", BonafideHistoryView.as_view(), name="bonafide-history"),
 ]

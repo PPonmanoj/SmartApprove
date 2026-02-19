@@ -7,7 +7,7 @@ import fitz  # PyMuPDF for PDF extraction
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-os.environ["GOOGLE_API_KEY"] = "AIzaSyA8USzxf0K8S4Wv8-rVpAPJ3TtfP3KE9qk"
+os.environ["GOOGLE_API_KEY"] = "AIzaSyDF_wAdV-hachwiel-NbnEFwQrwysvQTjE"
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
 
 # --- UPDATED: structured schema includes explanation ---
