@@ -19,6 +19,12 @@ from rest_framework.permissions import AllowAny
 from .serializers import StudentSignupSerializer, StaffSignupSerializer, MinimalUserSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
+from django.http import FileResponse, HttpResponseRedirect, Http404
+from django.conf import settings
+from django.core.cache import cache
+from django.utils import timezone
+from datetime import timedelta
+import uuid
 
 User = get_user_model()
 
@@ -142,6 +148,7 @@ class BonafideSubmitView(APIView):
          - persist extracted/checklist/is_valid/explanation into the BonafideRequest record
         """
         user = request.user
+        print(request)
         # ensure StudentProfile exists
         sp = getattr(user, "student_profile", None)
         if not sp:
@@ -170,17 +177,31 @@ class BonafideSubmitView(APIView):
         try:
             file_path = bon.permission_file.path
             raw_text = get_pdf_text(file_path)
-            result = run_bonafide_graph_from_text(raw_text)
+
+            # provide the logged-in student's expected details to the agent so it can verify matches
+            user = request.user
+            student_profile = getattr(user, "student_profile", None)
+            expected = {
+                "name": getattr(user, "name", None) or getattr(user, "full_name", None) or getattr(user, "username", None),
+                "roll_number": getattr(user, "username", None),
+                "department": (
+                    getattr(getattr(student_profile, "student_class", None), "code", None)
+                    or getattr(student_profile, "department", None)
+                    or ""
+                ),
+            }
+            agent_result = run_bonafide_graph_from_text(raw_text, expected=expected)
+
             # persist results
-            bon.extracted = result.get('extracted') or {}
-            bon.checklist = result.get('checklist') or {}
-            bon.is_valid = bool(result.get('is_valid', False))
+            bon.extracted = agent_result.get('extracted') or {}
+            bon.checklist = agent_result.get('checklist') or {}
+            bon.is_valid = bool(agent_result.get('is_valid', False))
             # prefer explanation inside extracted if present
             explanation = None
             if isinstance(bon.extracted, dict):
                 explanation = bon.extracted.get('explanation')
             if not explanation:
-                explanation = result.get('explanation') or ''
+                explanation = agent_result.get('explanation') or ''
             bon.explanation = explanation or ''
             # set status based on is_valid
             bon.status = 'pending'
@@ -573,3 +594,156 @@ class NotificationMarkReadView(APIView):
         n.unread = False
         n.save()
         return Response({"detail":"ok"}, status=status.HTTP_200_OK)
+
+class BonafideFileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk, *args, **kwargs):
+        try:
+            bon = BonafideRequest.objects.get(pk=pk)
+        except BonafideRequest.DoesNotExist:
+            raise Http404("Bonafide not found")
+
+        # simple permission: student owner or any staff can view
+        if not (request.user == getattr(bon, "student", None) or getattr(request.user, "staff_profile", None)):
+            return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        # candidate attributes that may hold the file or URL
+        # include permission_file (your FileField) and any other possible attribute names
+        candidates = ("permission_file", "file", "document", "attachment", "file_url", "filepath")
+        for attr in candidates:
+            v = getattr(bon, attr, None)
+            if not v:
+                continue
+
+            # string URLs or paths
+            if isinstance(v, str):
+                # absolute remote URL -> redirect
+                if v.startswith("http://") or v.startswith("https://"):
+                    return HttpResponseRedirect(v)
+
+                # if it's a relative MEDIA path or starts with MEDIA_URL
+                media_url = getattr(settings, "MEDIA_URL", "/media/")
+                media_root = getattr(settings, "MEDIA_ROOT", None)
+                candidate_path = v
+                if candidate_path.startswith(media_url):
+                    candidate_path = candidate_path[len(media_url):]
+                if media_root:
+                    abs_path = os.path.join(media_root, candidate_path.lstrip("/"))
+                    if os.path.exists(abs_path):
+                        return FileResponse(open(abs_path, "rb"), as_attachment=False, filename=os.path.basename(abs_path))
+
+                # maybe it's an absolute filesystem path
+                if os.path.exists(v):
+                    return FileResponse(open(v, "rb"), as_attachment=False, filename=os.path.basename(v))
+
+            # FileField-like object with .path or .url
+            else:
+                file_obj = v
+                path = getattr(file_obj, "path", None)
+                url = getattr(file_obj, "url", None)
+                if path and os.path.exists(path):
+                    return FileResponse(open(path, "rb"), as_attachment=False, filename=os.path.basename(path))
+                if url:
+                    if url.startswith("http://") or url.startswith("https://"):
+                        return HttpResponseRedirect(url)
+                    # local url -> try MEDIA_ROOT
+                    media_url = getattr(settings, "MEDIA_URL", "/media/")
+                    media_root = getattr(settings, "MEDIA_ROOT", None)
+                    candidate_path = url
+                    if candidate_path.startswith(media_url):
+                        candidate_path = candidate_path[len(media_url):]
+                    if media_root:
+                        abs_path = os.path.join(media_root, candidate_path.lstrip("/"))
+                        if os.path.exists(abs_path):
+                            return FileResponse(open(abs_path, "rb"), as_attachment=False, filename=os.path.basename(abs_path))
+
+        raise Http404("No file available for this bonafide request")
+
+class BonafideDownloadTokenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        try:
+            bon = BonafideRequest.objects.get(pk=pk)
+        except BonafideRequest.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # basic permission: owner student or any staff
+        if not (request.user == getattr(bon, "student", None) or getattr(request.user, "staff_profile", None)):
+            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+
+        # candidate attrs that might reference the file
+        # include permission_file as used by your model
+        candidates = ("permission_file", "file", "document", "attachment", "file_url", "filepath")
+        file_path = None
+        for attr in candidates:
+            v = getattr(bon, attr, None)
+            if not v:
+                continue
+            # external URL -> return it directly
+            if isinstance(v, str) and (v.startswith("http://") or v.startswith("https://")):
+                return Response({"url": v}, status=status.HTTP_200_OK)
+            # FileField-like
+            if not isinstance(v, str):
+                path = getattr(v, "path", None)
+                url = getattr(v, "url", None)
+                if path:
+                    file_path = path
+                    break
+                if url:
+                    media_url = getattr(settings, "MEDIA_URL", "/media/")
+                    media_root = getattr(settings, "MEDIA_ROOT", None)
+                    candidate = url
+                    if candidate.startswith(media_url):
+                        candidate = candidate[len(media_url):]
+                    if media_root:
+                        abs_path = os.path.join(media_root, candidate.lstrip("/"))
+                        if os.path.exists(abs_path):
+                            file_path = abs_path
+                            break
+            # string local path relative to MEDIA
+            if isinstance(v, str):
+                media_url = getattr(settings, "MEDIA_URL", "/media/")
+                media_root = getattr(settings, "MEDIA_ROOT", None)
+                candidate = v
+                if candidate.startswith(media_url):
+                    candidate = candidate[len(media_url):]
+                if media_root:
+                    abs_path = os.path.join(media_root, candidate.lstrip("/"))
+                    if os.path.exists(abs_path):
+                        file_path = abs_path
+                        break
+                if os.path.exists(v):
+                    file_path = v
+                    break
+
+        if not file_path or not os.path.exists(file_path):
+            return Response({"detail": "No file available."}, status=status.HTTP_404_NOT_FOUND)
+
+        # create short-lived token (stored in cache)
+        token = str(uuid.uuid4())
+        cache_key = f"bonafide_file_token:{token}"
+        cache.set(cache_key, file_path, timeout=120)  # 2 minutes
+        download_url = request.build_absolute_uri(f"/api/auth/bonafide/download/{token}/")
+        return Response({"url": download_url}, status=status.HTTP_200_OK)
+
+
+class PublicBonafideDownloadView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, token, *args, **kwargs):
+        cache_key = f"bonafide_file_token:{token}"
+        file_path = cache.get(cache_key)
+        if not file_path or not os.path.exists(file_path):
+            return Response({"detail": "Invalid or expired token."}, status=status.HTTP_404_NOT_FOUND)
+        return FileResponse(open(file_path, "rb"), as_attachment=False, filename=os.path.basename(file_path))
+
+class StudentBonafideListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # return all bonafide requests belonging to the logged in student
+        qs = BonafideRequest.objects.filter(student=request.user).order_by('-created_at')
+        serializer = BonafideRequestSerializer(qs, many=True, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)

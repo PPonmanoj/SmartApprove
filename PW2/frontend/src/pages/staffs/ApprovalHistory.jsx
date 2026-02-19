@@ -146,6 +146,53 @@ const ApprovalHistory = () => {
     }
   }
 
+  // open file via server-generated short-lived URL
+  const openFile = async (item) => {
+    if (!item || !item.id) return
+    const token = localStorage.getItem("access") || localStorage.getItem("token") || null
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/bonafide/${item.id}/file-token/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || `Failed to get file token (${res.status})`)
+      }
+      const data = await res.json()
+      if (data.url) {
+        window.open(data.url, "_blank")
+      } else {
+        throw new Error("No URL returned")
+      }
+    } catch (err) {
+      console.error("openFile error:", err)
+      alert("Unable to open file: " + (err.message || "Error"))
+    }
+  }
+
+  // helper to resolve file URL from API response
+  const getFileUrl = (item) => {
+    if (!item) return null
+    const candidate = item.file || item.file_url || item.document || item.attachment || item.filepath || null
+    if (candidate) {
+      if (typeof candidate === "string") {
+        if (candidate.startsWith("http://") || candidate.startsWith("https://")) return candidate
+        // assume relative path from backend
+        return `${API_BASE}${candidate.startsWith("/") ? "" : "/"}${candidate}`
+      }
+      if (candidate.url) {
+        return candidate.url.startsWith("http") ? candidate.url : `${API_BASE}${candidate.url}`
+      }
+    }
+    // fallback to a conventional download endpoint
+    if (item && item.id) return `${API_BASE}/api/auth/bonafide/${item.id}/file/`
+    return null
+  }
+  
   // pagination helpers
   const totalPages = Math.max(1, Math.ceil((items || []).length / PAGE_SIZE))
   const startIdx = (currentPage - 1) * PAGE_SIZE
@@ -214,16 +261,20 @@ const ApprovalHistory = () => {
             <h3>Request from {selected.student_name || selected.student_username}</h3>
             {detailLoading && <div>Loading...</div>}
             {detailError && <div style={{color:'red'}}>{detailError}</div>}
-
+            <div style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:8}}>
+              <button className="view-btn" onClick={() => openFile(selected)}>View File</button>
+              <button className="view-btn" onClick={() => { setModalVisible(false); setSelected(null) }}>Close</button>
+            </div>
+  
             <div style={{marginTop:8}}>
               <div style={{marginBottom:8}}>{renderStatusBadge(selected.status)}</div>
-
+  
               <h4 style={{marginBottom:6}}>Extracted Fields</h4>
               {renderExtractedTable(selected.extracted || {})}
-
+  
               <h4 style={{marginTop:12, marginBottom:6}}>Checklist</h4>
               {renderChecklistTable(selected.checklist || {})}
-
+  
               {/* Comments: show all available in read-only fashion */}
               {(selected.tutor_comment || (selected.extracted && selected.extracted._tutor_comment)) && (
                 <div style={{marginTop:12, padding:12, background:'#fafafa', border:'1px solid #eee', borderRadius:6}}>
@@ -231,24 +282,20 @@ const ApprovalHistory = () => {
                   <div style={{whiteSpace:'pre-wrap'}}>{selected.tutor_comment || selected.extracted._tutor_comment}</div>
                 </div>
               )}
-
+  
               {(selected.pc_comment || (selected.extracted && selected.extracted._pc_comment)) && (
                 <div style={{marginTop:12, padding:12, background:'#fff8e6', border:'1px solid #f0e6c8', borderRadius:6}}>
                   <div style={{fontWeight:700, marginBottom:6}}>Comment from Program Coordinator</div>
                   <div style={{whiteSpace:'pre-wrap'}}>{selected.pc_comment || selected.extracted._pc_comment}</div>
                 </div>
               )}
-
+  
               {(selected.hod_comment || (selected.extracted && selected.extracted._hod_comment)) && (
                 <div style={{marginTop:12, padding:12, background:'#e9f7ff', border:'1px solid #d7eefb', borderRadius:6}}>
                   <div style={{fontWeight:700, marginBottom:6}}>Comment from HoD</div>
                   <div style={{whiteSpace:'pre-wrap'}}>{selected.hod_comment || selected.extracted._hod_comment}</div>
                 </div>
               )}
-            </div>
-
-            <div style={{display:'flex', justifyContent:'flex-end', marginTop:12}}>
-              <button className="view-btn" onClick={() => { setModalVisible(false); setSelected(null) }}>Close</button>
             </div>
           </div>
         </div>

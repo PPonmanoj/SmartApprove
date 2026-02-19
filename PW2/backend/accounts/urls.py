@@ -3,7 +3,9 @@ from .views import (
     StudentSignupView, StaffSignupView, LoginView,
     BonafideCheckView, BonafideSubmitView, BonafideDetailView,
     IncomingBonafideListView, BonafideActionView, BonafideHistoryView,
-    NotificationListView, NotificationMarkReadView
+    NotificationListView, NotificationMarkReadView,
+    BonafideFileView, BonafideDownloadTokenView, PublicBonafideDownloadView,
+    StudentBonafideListView
 )
 
 urlpatterns = [
@@ -18,4 +20,8 @@ urlpatterns = [
     path("bonafide/history/", BonafideHistoryView.as_view(), name="bonafide-history"),
     path("notifications/", NotificationListView.as_view(), name="notifications-list"),
     path("notifications/<int:pk>/mark-read/", NotificationMarkReadView.as_view(), name="notification-mark-read"),
+    path("bonafide/<int:pk>/file/", BonafideFileView.as_view(), name="bonafide-file"),
+    path("bonafide/<int:pk>/file-token/", BonafideDownloadTokenView.as_view(), name="bonafide-file-token"),
+    path("bonafide/download/<str:token>/", PublicBonafideDownloadView.as_view(), name="bonafide-download-token"),
+    path("bonafide/mine/", StudentBonafideListView.as_view(), name="bonafide-mine"),
 ]

@@ -195,6 +195,34 @@ const IncomingRequests = () => {
     )
   }
 
+  // open file via server-generated short-lived URL
+  const openFile = async (item) => {
+    if (!item || !item.id) return
+    const token = localStorage.getItem("access") || localStorage.getItem("token") || null
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/bonafide/${item.id}/file-token/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        throw new Error(txt || `Failed to get file token (${res.status})`)
+      }
+      const data = await res.json()
+      if (data.url) {
+        window.open(data.url, "_blank")
+      } else {
+        throw new Error("No URL returned")
+      }
+    } catch (err) {
+      console.error("openFile error:", err)
+      alert("Unable to open file: " + (err.message || "Error"))
+    }
+  }
+
   return (
     <div className='dashboard-container'>
         <br />
@@ -238,13 +266,16 @@ const IncomingRequests = () => {
               <h3>Request from {selected.student_name}</h3>
               {detailLoading && <div>Loading details...</div>}
               {detailError && <div className="error">{detailError}</div>}
+              <div style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:8}}>
+                 <button className="view-btn" onClick={() => openFile(selected)}>View File</button>
+                 <button onClick={() => { setModalVisible(false); setSelected(null) }}>Close</button>
+              </div>
 
               <div style={{textAlign:'left', marginTop:6}}>
                 <h4 style={{marginBottom:6}}>Extracted Fields</h4>
-                {/* render extracted fields table - keep your existing render helper if present */}
-                {renderExtractedTable(selected.extracted)}
+                {renderExtractedTable(selected.extracted || {})}
                 <h4 style={{marginTop:12, marginBottom:6}}>Checklist</h4>
-                {renderChecklistTable(selected.checklist)}
+                {renderChecklistTable(selected.checklist || {})}
               </div>
 
               {/* Tutor comment (read-only) */}
