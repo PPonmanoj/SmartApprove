@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Department, StudentClass, StaffProfile, StudentProfile, BonafideRequest
+from .models import Department, StudentClass, StaffProfile, StudentProfile, BonafideRequest, Notification
 
 User = get_user_model()
 
@@ -135,3 +135,14 @@ class BonafideRequestSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.permission_file.url)
             return obj.permission_file.url
         return None
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_username = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(format="%Y-%m-%dT%H:%M:%S%z")
+
+    class Meta:
+        model = Notification
+        fields = ["id", "recipient", "actor_username", "verb", "message", "target_bonafide", "unread", "created_at"]
+
+    def get_actor_username(self, obj):
+        return getattr(obj.actor, "username", None)

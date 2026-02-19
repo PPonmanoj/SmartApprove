@@ -78,3 +78,18 @@ class BonafideRequest(models.Model):
 
     def __str__(self):
         return f"Bonafide({self.student.username}) - {self.status}"
+
+class Notification(models.Model):
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="actor_notifications")
+    verb = models.CharField(max_length=128)  # e.g. "submitted", "approved", "rejected", "new_request"
+    message = models.TextField(blank=True)
+    target_bonafide = models.ForeignKey("BonafideRequest", null=True, blank=True, on_delete=models.SET_NULL, related_name="notifications")
+    unread = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Notification to {self.recipient} - {self.verb}"

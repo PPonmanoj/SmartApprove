@@ -12,8 +12,8 @@ import tempfile
 # import the agent runner
 from .bonafide_agent import get_pdf_text, run_bonafide_graph_from_text
 
-from .models import BonafideRequest, StaffProfile, StudentProfile
-from .serializers import BonafideRequestSerializer
+from .models import BonafideRequest, StaffProfile, StudentProfile, Notification
+from .serializers import BonafideRequestSerializer, NotificationSerializer
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework.permissions import AllowAny
 from .serializers import StudentSignupSerializer, StaffSignupSerializer, MinimalUserSerializer
@@ -183,7 +183,7 @@ class BonafideSubmitView(APIView):
                 explanation = result.get('explanation') or ''
             bon.explanation = explanation or ''
             # set status based on is_valid
-            bon.status = 'approved' if bon.is_valid else 'pending'
+            bon.status = 'pending'
             bon.save()
         except Exception as exc:
             # keep record but log LLM failure
@@ -196,6 +196,17 @@ class BonafideSubmitView(APIView):
                 "warning": "Your student profile has no class assigned. The request was created but tutors will not receive it until your class is set.",
                 "result": serializer.data
             }, status=status.HTTP_201_CREATED)
+
+        # notify student
+        create_notification(user, None, "submitted", "Your bonafide request has been submitted.", target=bon)
+
+        # notify tutors for the student's class
+        student_cls = getattr(getattr(bon.student, "student_profile", None), "student_class", None)
+        if student_cls:
+            tutors = StaffProfile.objects.filter(student_class=student_cls).filter(Q(designation__icontains="TUTOR") | Q(designation__iexact="TUTOR"))
+            for t in tutors:
+                if getattr(t, "user", None):
+                    create_notification(t.user, bon.student, "new_request", f"New bonafide request from {bon.student.username}", target=bon)
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -268,11 +279,12 @@ class IncomingBonafideListView(APIView):
         if not tutor_class and designation not in ('HOD', 'HEAD', 'HEAD_OF_DEPARTMENT'):
             return Response({"detail": "Staff has no class/department assigned."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Tutors: show requests for their class, excluding those already forwarded to PC/HOD
+        # Tutors: show only active/pending requests for their class (exclude any final or forwarded states)
         if designation == 'TUTOR':
+            FINAL_STATUSES = ['pc_pending', 'hod_pending', 'rejected', 'approved']
             incoming_qs = BonafideRequest.objects.filter(
                 student__student_profile__student_class=tutor_class
-            ).exclude(status__in=['pc_pending', 'hod_pending'])
+            ).exclude(status__in=FINAL_STATUSES)
             serializer = BonafideRequestSerializer(incoming_qs, many=True, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -370,6 +382,17 @@ class BonafideActionView(APIView):
 
             persist_comment("tutor_comment", comment)
             bon.save()
+
+            # notify student
+            create_notification(bon.student, request.user, "actioned", f"Tutor {action} your request. Comment: {comment}", target=bon)
+            if action == "approve":
+                # notify program coordinators for that class
+                pc_profiles = StaffProfile.objects.filter(student_class=student_cls).filter(
+                    Q(designation__icontains="PROGRAM_COORDINATOR") | Q(designation__icontains="PC")
+                )
+                for pc in pc_profiles:
+                    if getattr(pc, "user", None):
+                        create_notification(pc.user, request.user, "new_request", f"New bonafide request from {bon.student.username} awaiting your action", target=bon)
             return Response(BonafideRequestSerializer(bon, context={"request": request}).data, status=status.HTTP_200_OK)
 
         # Program Coordinator actions (must act only on pc_pending)
@@ -387,6 +410,19 @@ class BonafideActionView(APIView):
 
             persist_comment("pc_comment", comment)
             bon.save()
+
+            # notify student and next approver (if any)
+            create_notification(bon.student, request.user, "actioned", f"Program Coordinator {action} your request. Comment: {comment}", target=bon)
+            if bon.status == "hod_pending":
+                # notify HoD(s) whose department matches the student's class
+                class_code_val = getattr(student_cls, "code", None) or str(student_cls or "")
+                def _norm(s): return re.sub(r'\W+', '', str(s or '')).upper()
+                hod_profiles = StaffProfile.objects.filter(designation__icontains='HOD')
+                for hod in hod_profiles:
+                    dept_val = get_staff_department(hod)
+                    if dept_val and _norm(dept_val) in _norm(class_code_val):
+                        if getattr(hod, "user", None):
+                            create_notification(hod.user, request.user, "new_request", f"New bonafide request from {bon.student.username} awaiting your action", target=bon)
             return Response(BonafideRequestSerializer(bon, context={"request": request}).data, status=status.HTTP_200_OK)
 
         # HoD actions (must act only on hod_pending)
@@ -411,6 +447,9 @@ class BonafideActionView(APIView):
 
             persist_comment("hod_comment", comment)
             bon.save()
+
+            # notify student
+            create_notification(bon.student, request.user, "actioned", f"HoD {action} your request. Comment: {comment}", target=bon)
             return Response(BonafideRequestSerializer(bon, context={"request": request}).data, status=status.HTTP_200_OK)
 
         # Other roles not allowed to perform action here
@@ -501,3 +540,36 @@ def get_staff_department(staff_profile):
                 return v
 
     return None
+
+# helper to create notification
+def create_notification(recipient, actor, verb, message="", target=None):
+    try:
+        Notification.objects.create(
+            recipient=recipient,
+            actor=actor,
+            verb=verb,
+            message=message or "",
+            target_bonafide=target
+        )
+    except Exception:
+        logger.exception("Failed to create notification for recipient=%s", getattr(recipient, "username", None))
+
+class NotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        qs = Notification.objects.filter(recipient=request.user).order_by("-created_at")
+        serializer = NotificationSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class NotificationMarkReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        try:
+            n = Notification.objects.get(pk=pk, recipient=request.user)
+        except Notification.DoesNotExist:
+            return Response({"detail":"Not found"}, status=status.HTTP_404_NOT_FOUND)
+        n.unread = False
+        n.save()
+        return Response({"detail":"ok"}, status=status.HTTP_200_OK)

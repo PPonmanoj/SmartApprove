@@ -2,6 +2,7 @@ import React from 'react'
 import './Dashboard.css'
 import { useNavigate } from 'react-router-dom'
 import { getUser } from '../api'
+import NotificationBell from "../components/NotificationBell"
 
 const StaffDashboard = () => {
   const navigate = useNavigate()
@@ -12,6 +13,9 @@ const StaffDashboard = () => {
   return (
     <div className='dashboard-container'>
       <div className='logo-container' onClick={() => navigate('/')}><img src="/logo.png" alt="logo" /></div>
+      <div style={{position:'absolute', top:'20px' , right:'200px', display:'flex', gap:12, alignItems:'center', marginLeft:'200px'}}>
+        <NotificationBell />
+      </div>
       <div className='user-container'>{displayName}</div>
 
       <div className='dashboard-inner'>

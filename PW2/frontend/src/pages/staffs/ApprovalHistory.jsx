@@ -14,6 +14,10 @@ const ApprovalHistory = () => {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
 
+  // pagination
+  const [currentPage, setCurrentPage] = useState(1)
+  const PAGE_SIZE = 5
+
   const getJwtToken = () => {
     const ls = localStorage
     return ls.getItem("access") || ls.getItem("token") || null
@@ -43,6 +47,7 @@ const ApprovalHistory = () => {
         }
         const data = await parseJsonOrThrow(res)
         setItems(data)
+        setCurrentPage(1)
       } catch (err) {
         console.error("fetchHistory error:", err)
         setError(err.message || "Error")
@@ -52,6 +57,12 @@ const ApprovalHistory = () => {
     }
     fetchHistory()
   }, [])
+
+  // recalc current page if items length changed and currentPage is out of range
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((items || []).length / PAGE_SIZE))
+    if (currentPage > totalPages) setCurrentPage(totalPages)
+  }, [items, currentPage])
 
   const renderStatusBadge = (status) => {
     if (!status) return <span style={{padding:'4px 8px', borderRadius:12, background:'#ddd'}}>Unknown</span>
@@ -135,6 +146,12 @@ const ApprovalHistory = () => {
     }
   }
 
+  // pagination helpers
+  const totalPages = Math.max(1, Math.ceil((items || []).length / PAGE_SIZE))
+  const startIdx = (currentPage - 1) * PAGE_SIZE
+  const visibleItems = (items || []).slice(startIdx, startIdx + PAGE_SIZE)
+  const goToPage = (p) => setCurrentPage(Math.max(1, Math.min(totalPages, p)))
+
   return (
     <div className='dashboard-container'>
       <br />
@@ -143,6 +160,26 @@ const ApprovalHistory = () => {
       <div className='user-container'>Staff</div>
       <center><h2 className='titles'>Approval History</h2></center>
 
+      {/* Pagination controls */}
+      <div style={{display:'flex', justifyContent:'flex-end', alignItems:'center', gap:8, width:'80%', margin:'0 auto 12px'}}>
+        <div style={{color:'#666'}}>Page {currentPage} of {totalPages}</div>
+        <div>
+          <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} style={{marginRight:6}}>Prev</button>
+          <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= totalPages} style={{marginRight:6}}>Next</button>
+        </div>
+        <div style={{display:'flex', gap:6, alignItems:'center'}}>
+          {Array.from({length: totalPages}, (_, i) => i+1).slice(0, 10).map(p => ( // limit page buttons to first 10 to avoid UI overflow
+            <button key={p} onClick={() => goToPage(p)} style={{
+              padding:'4px 8px',
+              background: p === currentPage ? '#007bff' : '#fff',
+              color: p === currentPage ? '#fff' : '#111',
+              borderRadius:4,
+              border: '1px solid #ddd'
+            }}>{p}</button>
+          ))}
+        </div>
+      </div>
+      
       <div className='log-table'>
         <div className='table-card header'>
           <div>Type</div>
@@ -155,8 +192,8 @@ const ApprovalHistory = () => {
         {loading && <div style={{padding:16}}>Loading...</div>}
         {error && <div style={{color:'red', padding:12}}>{error}</div>}
         {!loading && !items.length && <div style={{padding:16}}>No history available.</div>}
-
-        {items.map((r) => (
+        
+        {visibleItems.map((r) => (
           <div className='table-card' key={r.id}>
             <div>{r.request_type || 'Bonafide'}</div>
             <div>{r.created_at ? new Date(r.created_at).toLocaleDateString() : ''}</div>
@@ -167,6 +204,7 @@ const ApprovalHistory = () => {
             </div>
           </div>
         ))}
+
       </div>
 
       {/* Read-only modal for history detail */}
