@@ -1,0 +1,12 @@
+Django
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+python-dotenv
+gunicorn
+psycopg2-binary
+pymupdf
+pydantic
+langchain_google_genai
+langgraph
+langchain-groq
